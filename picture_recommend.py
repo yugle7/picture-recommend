@@ -61,7 +61,7 @@ class PictureRecommendSystem:
 
         for p, ds in picture_dates.items():
             # чем больше кликали, тем меньше картинка влияет на расстояние между пользователями
-            n = len(ds)
+            n = len(ds)  # todo попробовать другую зависимость
             self.picture_weight[p] = sqrt((1 + min(ds) + max(ds)) / n) if n > 10 else 3
 
         print(len(self.picture_weight), 'pictures with weight')
@@ -99,11 +99,11 @@ class PictureRecommendSystem:
             u, p, d = q.split(',')
             if int(u) in self.test_users:
                 if d < '2019-03-17\n':
-                    # человек имеет старые клики
+                    # клики, которые будем использовать для предсказания
                     dst.write(q)
                     user_in_test[int(u)] |= 1
                 else:
-                    # есть что ему предсказывать
+                    # клики, которые надо предсказать
                     self.test_user_pictures[int(u)].append(int(p))
                     user_in_test[int(u)] |= 2
             else:
@@ -172,7 +172,7 @@ class PictureRecommendSystem:
 
         predicted_pictures = [(p, s) for p, s in picture_prediction.items() if s > 0.5]
 
-        if len(predicted_pictures) < 3:
+        if len(predicted_pictures) < 3:  # todo это не улучшает качество предсказания
             # если картинок с хорошим предсказанием не хватает, то берем несколько с плохим
             picture_prediction = list(picture_prediction.items())
             picture_prediction.sort(key=lambda q: -q[1])

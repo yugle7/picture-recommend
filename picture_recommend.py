@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from collections import defaultdict
 import csv
 from math import sqrt
@@ -8,10 +8,14 @@ from score import mapk
 
 class PictureRecommendSystem:
     user_pictures = defaultdict(list)
-    picture_weight = defaultdict(int)
+    picture_weight = defaultdict(float)
 
+    picture_actuality = {}
     picture_popularity = defaultdict(float)
     popular_pictures = []
+
+    group_popular_pictures = []
+    user_group = {}
 
     user_weighted_pictures = {}
     test_user_pictures = defaultdict(list)
@@ -22,19 +26,48 @@ class PictureRecommendSystem:
 
     pictures_count = 100  # максимальное количество картинок, которые предсказываем
     pictures_delta = 10  # добавляем столько картинок человеку и снова вычисляем для него предсказания
-    actual_days = 28  # время, по которому вычисляем актуальность картинок
+    shift_days = 7  # смещение по времени (для тестов)
+    actual_days = 9  # время, по которому вычисляем актуальность картинок
     test_users_count = 40000  # берем столько пользователей и выбираем из них тех, у кого были старые клики и новые
+
+    def __init__(self, sex, age):
+        self.user_pictures.clear()
+        self.picture_weight.clear()
+
+        self.picture_actuality.clear()
+        self.picture_popularity.clear()
+        self.popular_pictures.clear()
+
+        self.group_popular_pictures.clear()
+        self.user_group.clear()
+
+        self.groups_count = 4
+        self.sex = sex
+        self.age = age
+
+        self.user_weighted_pictures.clear()
+        self.test_user_pictures.clear()
+        self.test_users.clear()
+
+        self.user_picture_date.clear()
+        self.picture_clicks.clear()
+
+        self.today = date(2019, 3, 25) - timedelta(self.shift_days)
 
     def read_user_pictures(self):
         # читаем картинки из файла
+
         src = open('data/train_clicks.csv')
         src.readline()
 
         user_picture_count = 0
 
         for u, p, d in csv.reader(src, delimiter=','):
-            self.user_picture_date[(int(u), int(p))] = d
-            self.user_pictures[int(u)].append(int(p))
+            u = int(u)
+            p = int(p)
+
+            self.user_picture_date[(u, p)] = d
+            self.user_pictures[u].append(p)
             user_picture_count += 1
         src.close()
 
@@ -43,14 +76,18 @@ class PictureRecommendSystem:
     def calc_picture_weight(self):
         # вычисляем вес картинки - насколько клик по ней влияет на схожесть пользователей
 
-        today = date(2019, 3, 24)
         picture_dates = defaultdict(list)
 
         for (u, p), d in self.user_picture_date.items():
-            days = (today - date(int(d[:4]), int(d[5:7]), int(d[8:]))).days
+            days = (self.today - date(int(d[:4]), int(d[5:7]), int(d[8:]))).days
+            if days < 0:
+                continue
+
             picture_dates[p].append(days)
             if days < self.actual_days:
                 self.picture_clicks[p] += 1
+
+            self.picture_actuality[p] = min(self.picture_actuality.get(p, self.actual_days), days)
 
         picture_clicks = list(self.picture_clicks.items())
         picture_clicks.sort(key=lambda q: -q[1])
@@ -61,10 +98,35 @@ class PictureRecommendSystem:
 
         for p, ds in picture_dates.items():
             # чем больше кликали, тем меньше картинка влияет на расстояние между пользователями
-            n = len(ds)  # todo попробовать другую зависимость
-            self.picture_weight[p] = sqrt((1 + min(ds) + max(ds)) / n) if n > 10 else 3
+
+            w = len(ds) / (1 + min(ds) + max(ds))
+            w = max(float(1), min(float(10), sqrt(w)))
+            self.picture_weight[p] = 1 / w
 
         print(len(self.picture_weight), 'pictures with weight')
+
+    def calc_user_group(self):
+        # вычисляем популярность картинок по группам
+
+        with open('data/user_information.csv') as src:
+            src.readline()
+            for q in src:
+                u, d, es = q.split(',')
+                es = list(map(float, es.split()))
+                g = (es[0] > self.sex) + 2 * (es[11] > self.age)
+                self.user_group[int(u)] = g
+
+        group_picture_clicks = [defaultdict(int) for g in range(self.groups_count + 1)]
+
+        for (u, p), d in self.user_picture_date.items():
+            g = self.user_group.get(u, self.groups_count)
+            group_picture_clicks[g][p] += 1
+
+        for g in range(self.groups_count + 1):
+            picture_clicks = list(group_picture_clicks[g].items())
+            picture_clicks.sort(key=lambda q: -q[1])
+            popular_pictures = [p for p, c in picture_clicks[:self.pictures_count]]
+            self.group_popular_pictures.append(popular_pictures)
 
     def read_test_users(self):
         # читаем тестовых пользователей из файла
@@ -72,6 +134,26 @@ class PictureRecommendSystem:
         with open('data/test_users.csv') as src:
             src.readline()
             self.test_users = list(map(int, src.read().split()))
+
+    def take_actual_clicks(self):
+        # оставляем только самые актуальные клики
+
+        src = open('data/clicks.csv')
+        dst = open('data/train_clicks.csv', 'w')
+        dst.write(src.readline())
+
+        after = (self.today - timedelta(self.actual_days)).strftime('%Y-%m-%d')
+
+        for q in src:
+            u, p, d = q.split(',')
+
+            if d < after:
+                continue
+
+            dst.write(q)
+
+        src.close()
+        dst.close()
 
     def make_test_users(self):
         # создаем тестовых пользователей
@@ -87,6 +169,7 @@ class PictureRecommendSystem:
         shuffle(users)
 
         # случайно берем некоторое количество людей
+
         self.test_users = set(users[:self.test_users_count])
 
         src = open('data/clicks.csv')
@@ -94,20 +177,69 @@ class PictureRecommendSystem:
         dst.write(src.readline())
 
         user_in_test = defaultdict(int)
+        today = self.today.strftime('%Y-%m-%d')
+        after = (self.today - timedelta(self.actual_days)).strftime('%Y-%m-%d')
 
         for q in src:
-            u, p, d = q.split(',')
-            if int(u) in self.test_users:
-                if d < '2019-03-17\n':
-                    # клики, которые будем использовать для предсказания
-                    dst.write(q)
-                    user_in_test[int(u)] |= 1
-                else:
-                    # клики, которые надо предсказать
-                    self.test_user_pictures[int(u)].append(int(p))
-                    user_in_test[int(u)] |= 2
-            else:
+            u, p, d = q[:-1].split(',')
+            u = int(u)
+            p = int(p)
+
+            if d < after:
+                continue
+
+            if d < today:
                 dst.write(q)
+
+            if u in self.test_users:
+                if d < today:
+                    user_in_test[u] |= 1  # обучение
+
+                else:
+                    self.test_user_pictures[u].append(p)
+                    user_in_test[u] |= 2  # тест
+
+        for u in list(self.test_users):
+            if user_in_test[u] != 3:
+                self.test_users.remove(u)
+
+        src.close()
+        dst.close()
+
+        self.test_users = list(self.test_users)
+        print(len(self.test_users), 'test users')
+
+    def take_test_users(self):
+        # берем тестовых пользователей из файла и делаем последнюю неделю тестовой
+
+        self.read_test_users()
+
+        src = open('data/clicks.csv')
+        dst = open('data/train_clicks.csv', 'w')
+        dst.write(src.readline())
+
+        user_in_test = defaultdict(int)
+        today = self.today.strftime('%Y-%m-%d')
+        after = (self.today - timedelta(self.actual_days)).strftime('%Y-%m-%d')
+
+        for q in src:
+            u, p, d = q[:-1].split(',')
+            u = int(u)
+            p = int(p)
+
+            if d < after:
+                continue
+
+            if d < today:
+                dst.write(q)
+
+            if u in self.test_users:
+                if d < today:
+                    user_in_test[u] |= 1  # обучение
+
+                else:
+                    self.test_user_pictures[u].append(p)
+                    user_in_test[u] |= 2  # тест
 
         for u in list(self.test_users):
             if user_in_test[u] != 3:
@@ -150,6 +282,7 @@ class PictureRecommendSystem:
         user_distances = []
 
         # считаем расстояния до всех пользователей
+
         for v in self.user_weighted_pictures:
             if u == v:
                 continue
@@ -159,6 +292,7 @@ class PictureRecommendSystem:
                 user_distances.append((d, v))
 
         # считаем предсказания в зависимости от близости людей
+
         picture_prediction = defaultdict(float)
         user_distances.sort()
 
@@ -167,29 +301,37 @@ class PictureRecommendSystem:
                 if p not in user_pictures:
                     picture_prediction[p] += 2 - d
 
+        # при равном предсказании давать предпочтение более новым
+
         for p in picture_prediction:
-            picture_prediction[p] += self.picture_popularity.get(p, 0)
+            picture_prediction[p] -= self.picture_actuality[p] / 16 / self.actual_days
 
         predicted_pictures = [(p, s) for p, s in picture_prediction.items() if s > 0.5]
 
-        if len(predicted_pictures) < 3:  # todo это не улучшает качество предсказания
-            # если картинок с хорошим предсказанием не хватает, то берем несколько с плохим
-            picture_prediction = list(picture_prediction.items())
-            picture_prediction.sort(key=lambda q: -q[1])
-            predicted_pictures = [p for p, s in picture_prediction[:2]]
-        else:
-            # берем картинки с наибольшим предсказанием
-            predicted_pictures.sort(key=lambda q: -q[1])
-            predicted_pictures = [p for p, s in predicted_pictures[:self.pictures_count]]
+        # берем картинки с наибольшим предсказанием
+
+        predicted_pictures.sort(key=lambda q: -q[1])
+        predicted_pictures = [p for p, s in predicted_pictures[:self.pictures_count]]
 
         print(u, len(user_pictures), len(predicted_pictures))
 
+        if not predicted_pictures and picture_prediction:
+            # берем картинку с максимальным предсказанием
+
+            p, s = max(list(picture_prediction.items()), key=lambda q: q[1])
+            predicted_pictures = [p]
+
         if not predicted_pictures:
             # добавляем самые популярные картинки
-            predicted_pictures = delta_pictures + [p for p in self.popular_pictures if p not in user_pictures]
+
+            g = self.user_group.get(u, self.groups_count)
+            popular_pictures = self.group_popular_pictures[g]
+
+            predicted_pictures = delta_pictures + [p for p in popular_pictures if p not in user_pictures]
         else:
             if len(delta_pictures) + len(predicted_pictures) < self.pictures_count:
                 # добавляем человеку несколько предсказанных картинок и делаем новое предсказание
+
                 predicted_pictures = predicted_pictures[:self.pictures_delta]
 
                 self.user_pictures[u] += predicted_pictures
@@ -239,13 +381,17 @@ class PictureRecommendSystem:
 
 
 if __name__ == '__main__':
-    prs = PictureRecommendSystem()
+    prs = PictureRecommendSystem(0.6, 0.5)
 
-    prs.make_test_users()
+    prs.take_test_users()
     prs.read_user_pictures()
 
     prs.calc_picture_weight()
     prs.get_user_weighted_pictures()
 
+    prs.calc_user_group()
+
     prs.save_predicted_pictures()
     print(prs.get_score())
+
+# 26.09963632786263
